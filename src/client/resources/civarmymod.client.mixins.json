@@ -1,0 +1,14 @@
+{
+	"required": true,
+	"package": "net.civarmymod.mixin",
+	"compatibilityLevel": "JAVA_21",
+	"client": [
+		"ChunkRenderRegionMixin",
+		"ClientChunkManagerMixin",
+		"MinecraftClientMixin",
+		"WorldRendererMixin"
+	],
+	"injectors": {
+		"defaultRequire": 1
+	}
+}
