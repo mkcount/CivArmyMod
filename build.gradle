@@ -39,8 +39,8 @@ dependencies {
 	// Fabric API. This is technically optional, but you probably want it anyway.
 	modImplementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_version}"
 	
-	// Java-WebSocket library
-	implementation "org.java-websocket:Java-WebSocket:1.5.3"
+	implementation group: 'org.java-websocket', name: 'Java-WebSocket', version: '1.5.6'
+    include group: 'org.java-websocket', name: 'Java-WebSocket', version: '1.5.6'
 }
 
 processResources {

@@ -49,6 +49,7 @@ public abstract class ClientChunkManagerMixin {
     private void onLoadChunkFromPacket(int x, int z, PacketByteBuf buf, NbtCompound nbt, 
                                       Consumer<ChunkData.BlockEntityVisitor> consumer,
                                       CallbackInfoReturnable<WorldChunk> cir) {
+                                        System.out.println("[FogOfWar DEBUG] ClientChunkManagerMixin.onLoadChunkFromPacket called for chunk: (" + x + ", " + z + ")"); // 디버그 로그 추가
         try {
             // FogOfWarClient 인스턴스 확인
             if (FogOfWarClient.getInstance() == null) {

@@ -30,6 +30,7 @@ public class ChunkRenderRegionMixin {
     @Inject(method = "getBlockState", at = @At("HEAD"), cancellable = true)
     private void onGetBlockState(BlockPos pos, CallbackInfoReturnable<BlockState> cir) {
         try {
+            System.out.println("[FogOfWar DEBUG] ChunkRenderRegionMixin.onGetBlockState called for pos: " + pos); // 디버그 로그 추가
             // 청크 좌표 계산
             int chunkX = pos.getX() >> 4;
             int chunkZ = pos.getZ() >> 4;

@@ -4,8 +4,7 @@
 	"compatibilityLevel": "JAVA_21",
 	"client": [
 		"ChunkRenderRegionMixin",
-		"ClientChunkManagerMixin",
-		"MinecraftClientMixin"
+		"ClientChunkManagerMixin"		
 	],
 	"injectors": {
 		"defaultRequire": 1
