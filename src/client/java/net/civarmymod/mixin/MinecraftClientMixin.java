@@ -30,7 +30,7 @@ public class MinecraftClientMixin {
             System.out.println("게임 종료 시 데이터 저장 실패: " + e.getMessage());
         }
     }
-    
+
     /**
      * 월드 로드 시 데이터 로드 (아직 초기화가 완료되지 않은 경우)
      * 주의: 이 메서드는 FogOfWarClient에서 이벤트 기반 로드와 중복될 수 있음
@@ -40,7 +40,8 @@ public class MinecraftClientMixin {
         try {
             System.out.println("월드 접속 감지: 안개 데이터 로드 중...");
             if (FogOfWarClient.getInstance() != null) {
-                FogOfWarClient.getInstance().loadData();
+                // Let FogOfWarClient handle loading via its own lifecycle events
+                // FogOfWarClient.getInstance().loadData(); // Potentially redundant
             }
         } catch (Exception e) {
             System.out.println("월드 접속 시 데이터 로드 실패: " + e.getMessage());
