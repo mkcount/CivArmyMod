@@ -21,16 +21,29 @@ public class MinecraftClientMixin {
      */
     @Inject(method = "stop", at = @At("HEAD"))
     private void onGameStop(CallbackInfo ci) {
-        System.out.println("게임 종료 감지: 안개 데이터 저장 중...");
-        FogOfWarClient.getInstance().saveData();
+        try {
+            System.out.println("게임 종료 감지: 안개 데이터 저장 중...");
+            if (FogOfWarClient.getInstance() != null) {
+                FogOfWarClient.getInstance().saveData();
+            }
+        } catch (Exception e) {
+            System.out.println("게임 종료 시 데이터 저장 실패: " + e.getMessage());
+        }
     }
     
     /**
      * 월드 로드 시 데이터 로드 (아직 초기화가 완료되지 않은 경우)
+     * 주의: 이 메서드는 FogOfWarClient에서 이벤트 기반 로드와 중복될 수 있음
      */
     @Inject(method = "joinWorld", at = @At("RETURN"))
-    private void onJoinWorld(CallbackInfo ci) {
-        System.out.println("월드 접속 감지: 안개 데이터 로드 중...");
-        FogOfWarClient.getInstance().loadData();
+    public void onJoinWorld(CallbackInfo ci) {
+        try {
+            System.out.println("월드 접속 감지: 안개 데이터 로드 중...");
+            if (FogOfWarClient.getInstance() != null) {
+                FogOfWarClient.getInstance().loadData();
+            }
+        } catch (Exception e) {
+            System.out.println("월드 접속 시 데이터 로드 실패: " + e.getMessage());
+        }
     }
 }

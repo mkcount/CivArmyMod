@@ -29,18 +29,32 @@ public class ChunkRenderRegionMixin {
      */
     @Inject(method = "getBlockState", at = @At("HEAD"), cancellable = true)
     private void onGetBlockState(BlockPos pos, CallbackInfoReturnable<BlockState> cir) {
-        // 청크 좌표 계산
-        int chunkX = pos.getX() >> 4;
-        int chunkZ = pos.getZ() >> 4;
-        
-        // 현재 청크가 안개 상태인지 확인
-        if (FogOfWarClient.isFoggedChunk(chunkX, chunkZ)) {
-            // 스냅샷에서 블록 상태 가져오기
-            BlockState state = getBlockStateFromSnapshot(chunkX, chunkZ, pos);
-            if (state != null) {
-                cir.setReturnValue(state);
-                cir.cancel();
+        try {
+            // 청크 좌표 계산
+            int chunkX = pos.getX() >> 4;
+            int chunkZ = pos.getZ() >> 4;
+            
+            // FogOfWarClient 인스턴스 확인
+            if (FogOfWarClient.getInstance() == null) {
+                return;
             }
+            
+            // 현재 청크가 안개 상태인지 확인
+            if (FogOfWarClient.isFoggedChunk(chunkX, chunkZ)) {
+                // 스냅샷에서 블록 상태 가져오기
+                BlockState state = getBlockStateFromSnapshot(chunkX, chunkZ, pos);
+                if (state != null) {
+                    cir.setReturnValue(state);
+                    cir.cancel();
+                } else {
+                    // 스냅샷이 없으면 기본 안개 블록으로 대체
+                    BlockState fogBlock = FogOfWarClient.getFogBlock(chunkX, chunkZ);
+                    cir.setReturnValue(fogBlock);
+                    cir.cancel();
+                }
+            }
+        } catch (Exception e) {
+            System.out.println("ChunkRenderRegionMixin 오류: " + e.getMessage());
         }
     }
     
@@ -48,42 +62,47 @@ public class ChunkRenderRegionMixin {
      * 스냅샷에서 특정 위치의 블록 상태를 가져옵니다.
      */
     private BlockState getBlockStateFromSnapshot(int chunkX, int chunkZ, BlockPos pos) {
-        NbtCompound snapshot = FogOfWarClient.getChunkSnapshot(chunkX, chunkZ);
-        if (snapshot == null) {
-            return null;
-        }
-        
-        // 청크 내 상대 좌표 계산
-        int relX = pos.getX() & 15;
-        int relZ = pos.getZ() & 15;
-        int sectionY = pos.getY() >> 4;
-        int relY = pos.getY() & 15;
-        
-        // 섹션에서 블록 찾기
-        if (snapshot.contains("sections")) {
-            NbtList sections = snapshot.getList("sections", 10);
-            for (int i = 0; i < sections.size(); i++) {
-                NbtCompound section = sections.getCompound(i);
-                if (section.getInt("y") == sectionY) {
-                    NbtList blocks = section.getList("blocks", 10);
-                    for (int j = 0; j < blocks.size(); j++) {
-                        NbtCompound block = blocks.getCompound(j);
-                        if (block.getInt("x") == relX && block.getInt("y") == relY && block.getInt("z") == relZ) {
-                            // 블록 ID로 BlockState 생성
-                            try {
-                                String blockId = block.getString("id");
-                                // Identifier.of() 메서드 사용
-                                return Registries.BLOCK.get(Identifier.of(blockId)).getDefaultState();
-                            } catch (Exception e) {
-                                System.out.println("블록 상태 생성 실패: " + e.getMessage());
-                                return Blocks.BEDROCK.getDefaultState(); // 오류 시 암석으로 표시
+        try {
+            NbtCompound snapshot = FogOfWarClient.getChunkSnapshot(chunkX, chunkZ);
+            if (snapshot == null) {
+                return null;
+            }
+            
+            // 청크 내 상대 좌표 계산
+            int relX = pos.getX() & 15;
+            int relZ = pos.getZ() & 15;
+            int sectionY = pos.getY() >> 4;
+            int relY = pos.getY() & 15;
+            
+            // 섹션에서 블록 찾기
+            if (snapshot.contains("sections")) {
+                NbtList sections = snapshot.getList("sections", 10);
+                for (int i = 0; i < sections.size(); i++) {
+                    NbtCompound section = sections.getCompound(i);
+                    if (section.getInt("y") == sectionY) {
+                        NbtList blocks = section.getList("blocks", 10);
+                        for (int j = 0; j < blocks.size(); j++) {
+                            NbtCompound block = blocks.getCompound(j);
+                            if (block.getInt("x") == relX && block.getInt("y") == relY && block.getInt("z") == relZ) {
+                                // 블록 ID로 BlockState 생성
+                                try {
+                                    String blockId = block.getString("id");
+                                    // 안전한 Identifier 생성
+                                    return Registries.BLOCK.get(Identifier.of(blockId)).getDefaultState();
+                                } catch (Exception e) {
+                                    System.out.println("블록 상태 생성 실패: " + e.getMessage());
+                                    return Blocks.BEDROCK.getDefaultState(); // 오류 시 암석으로 표시
+                                }
                             }
                         }
                     }
                 }
             }
+            
+            return null;
+        } catch (Exception e) {
+            System.out.println("스냅샷에서 블록 상태 가져오기 실패: " + e.getMessage());
+            return null;
         }
-        
-        return null;
     }
 }

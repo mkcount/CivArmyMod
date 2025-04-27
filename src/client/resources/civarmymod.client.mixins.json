@@ -5,8 +5,7 @@
 	"client": [
 		"ChunkRenderRegionMixin",
 		"ClientChunkManagerMixin",
-		"MinecraftClientMixin",
-		"WorldRendererMixin"
+		"MinecraftClientMixin"
 	],
 	"injectors": {
 		"defaultRequire": 1

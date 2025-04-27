@@ -16,10 +16,13 @@ import net.civarmymod.network.FogAPIClient;
 import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.api.EnvType;
 import net.fabricmc.api.Environment;
+import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientLifecycleEvents;
+import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.minecraft.block.Block;
 import net.minecraft.block.BlockState;
 import net.minecraft.block.Blocks;
 import net.minecraft.client.MinecraftClient;
+import net.minecraft.client.world.ClientChunkManager;
 import net.minecraft.nbt.NbtCompound;
 import net.minecraft.nbt.NbtIo;
 import net.minecraft.nbt.NbtList;
@@ -36,6 +39,13 @@ import net.minecraft.util.math.ChunkPos;
 public class FogOfWarClient implements ClientModInitializer{
     // 싱글톤 인스턴스
     private static FogOfWarClient instance;
+    
+    // 초기화 완료 여부
+    private boolean initialized = false;
+    // 데이터 로드 완료 여부
+    private boolean dataLoaded = false;
+    // 안개 기능 활성화 여부
+    private boolean fogEnabled = false;
     
     /**
      * 싱글톤 인스턴스 가져오기
@@ -71,28 +81,80 @@ public class FogOfWarClient implements ClientModInitializer{
     
     @Override
     public void onInitializeClient() {
-        // 싱글톤 인스턴스 설정 (가장 먼저 설정)
-        instance = this;
-        
         try {
-            // 설정 불러오기
-            loadConfig();
+            // 싱글톤 인스턴스 설정 (가장 먼저 설정)
+            instance = this;
             
-            // 데이터 불러오기
-            loadData();
-
+            System.out.println("전장의 안개 모드 초기화 시작...");
+            
+            // 기본 객체 초기화
+            foggedChunks = new HashSet<>();
+            chunkSnapshots = new HashMap<>();
+            
+            // 초기 상태 설정 - 모든 청크가 기본적으로 VISIBLE 상태가 되도록 함
+            // 여기서는 실제로 모든 청크에 대해 맵에 추가하지는 않고, getOrDefault 로직을 통해 처리
+            System.out.println("모든 청크는 기본적으로 VISIBLE 상태로 설정됩니다.");
+            
             // API 클라이언트 초기화
-            apiClient = new FogAPIClient();
-            apiClient.setDataConsumer(this::updateFromApiResponse);
-            
-            // 웹소켓 연결 시도 (서버가 없는 경우 예외 처리)
             try {
-                apiClient.connectWebSocket();
-                System.out.println("웹소켓 연결 시도 중...");
+                apiClient = new FogAPIClient();
+                apiClient.setDataConsumer(this::updateFromApiResponse);
             } catch (Exception e) {
-                System.out.println("웹소켓 연결 실패: " + e.getMessage());
-                System.out.println("서버가 열려있지 않습니다. 오프라인 모드로 실행합니다.");
+                System.err.println("API 클라이언트 초기화 실패: " + e.getMessage());
+                e.printStackTrace();
             }
+            
+            // 이벤트 등록을 try-catch로 감싸기
+            try {
+                // 이벤트 등록: 클라이언트 시작 후 데이터 로드
+                ClientLifecycleEvents.CLIENT_STARTED.register(client -> {
+                    loadDataWhenReady();
+                });
+                
+                // 이벤트 등록: 월드 진입 시 데이터 로드
+                ClientTickEvents.END_CLIENT_TICK.register(client -> {
+                    if (!dataLoaded && client != null && client.world != null && client.player != null && !initialized) {
+                        loadDataWhenReady();
+                        initialized = true;
+                    }
+                });
+                
+                // 이벤트 등록: 클라이언트 종료 시 데이터 저장
+                ClientLifecycleEvents.CLIENT_STOPPING.register(client -> {
+                    if (dataLoaded) {
+                        saveData();
+                    }
+                });
+            } catch (Exception e) {
+                System.err.println("이벤트 리스너 등록 실패: " + e.getMessage());
+                e.printStackTrace();
+            }
+            
+            // 설정 로드 시도
+            try {
+                // 설정 불러오기
+                loadConfig();
+            } catch (Exception e) {
+                System.err.println("설정 로드 실패: " + e.getMessage());
+                e.printStackTrace();
+            }
+            
+            // 웹소켓 연결은 별도 스레드에서 시도하여 초기화 차단 방지
+            new Thread(() -> {
+                try {
+                    // 여기서 잠시 대기하여 게임 초기화가 완료되도록 함
+                    Thread.sleep(5000);
+                    
+                    // 웹소켓 연결 시도
+                    if (apiClient != null) {
+                        apiClient.connectWebSocket();
+                        System.out.println("웹소켓 연결 시도 중...");
+                    }
+                } catch (Exception e) {
+                    System.out.println("웹소켓 연결 실패: " + e.getMessage());
+                    System.out.println("서버가 열려있지 않습니다. 오프라인 모드로 실행합니다.");
+                }
+            }).start();
             
             // 모드 초기화 완료 메시지
             System.out.println("전장의 안개 모드가 초기화되었습니다.");
@@ -103,10 +165,20 @@ public class FogOfWarClient implements ClientModInitializer{
     }
     
     /**
-     * 주어진 청크가 안개 상태인지 확인합니다.
+     * 클라이언트가 준비되었을 때 안전하게 데이터 로드
      */
-    public static boolean isFoggedChunk(int x, int z) {
-        return getInstance().foggedChunks.contains(new ChunkPosition(x, z));
+    private void loadDataWhenReady() {
+        MinecraftClient client = MinecraftClient.getInstance();
+        if (client != null && client.world != null && client.player != null) {
+            try {
+                loadData();
+                dataLoaded = true;
+                System.out.println("전장의 안개 데이터 로드 완료");
+            } catch (Exception e) {
+                System.err.println("전장의 안개 데이터 로드 실패: " + e.getMessage());
+                e.printStackTrace();
+            }
+        }
     }
     
     /**
@@ -117,12 +189,33 @@ public class FogOfWarClient implements ClientModInitializer{
     }
     
     /**
-     * 특정 청크가 숨겨져 있는지 확인
+     * 특정 청크가 숨겨진 상태인지 확인
      */
     public static boolean isHiddenChunk(int x, int z) {
+        if (instance == null) return false; // 인스턴스가 없으면 기본적으로 visible
         ChunkPosition pos = new ChunkPosition(x, z);
-        ChunkState state = getInstance().chunkStates.getOrDefault(pos, ChunkState.HIDDEN);
-        return state == ChunkState.HIDDEN;
+        // 맵에 없으면 기본적으로 VISIBLE으로 처리 (기존: HIDDEN)
+        return instance.chunkStates.getOrDefault(pos, ChunkState.VISIBLE) == ChunkState.HIDDEN;
+    }
+    
+    /**
+     * 특정 청크가 보이는지 확인
+     */
+    public static boolean isVisibleChunk(int x, int z) {
+        if (instance == null) return true; // 인스턴스가 없으면 기본적으로 visible
+        ChunkPosition pos = new ChunkPosition(x, z);
+        // 맵에 없으면 기본적으로 VISIBLE으로 처리 (기존: HIDDEN)
+        return instance.chunkStates.getOrDefault(pos, ChunkState.VISIBLE) == ChunkState.VISIBLE;
+    }
+    
+    /**
+     * 특정 청크가 안개 상태인지 확인
+     */
+    public static boolean isFoggedChunk(int x, int z) {
+        if (instance == null) return false; // 인스턴스가 없으면 기본적으로 visible
+        ChunkPosition pos = new ChunkPosition(x, z);
+        // 맵에 없으면 기본적으로 VISIBLE으로 처리 (기존: HIDDEN)
+        return instance.chunkStates.getOrDefault(pos, ChunkState.VISIBLE) == ChunkState.FOGGED;
     }
     
     /**
@@ -212,23 +305,36 @@ public class FogOfWarClient implements ClientModInitializer{
                         try {
                             ChunkState state = ChunkState.valueOf(stateStr);
                             chunkStates.put(chunkPos, state);
+                            // HIDDEN 또는 FOGGED 상태로 변경된 경우 청크 언로드 시도
+                            if (state == ChunkState.HIDDEN || state == ChunkState.FOGGED) {
+                                forceUnloadChunk(x, z);
+                            }
                         } catch (IllegalArgumentException e) {
                             System.out.println("잘못된 청크 상태: " + stateStr);
-                            // 기본값으로 FOGGED 설정
-                            chunkStates.put(chunkPos, ChunkState.FOGGED);
+                            // 기본값으로 HIDDEN 설정
+                            chunkStates.put(chunkPos, ChunkState.HIDDEN);
+                            // 청크 언로드 시도
+                            forceUnloadChunk(x, z);
                         }
                     } else {
-                        // 기본값은 FOGGED
-                        chunkStates.put(chunkPos, ChunkState.FOGGED);
+                        // 기본값은 HIDDEN
+                        chunkStates.put(chunkPos, ChunkState.HIDDEN);
+                        // 청크 언로드 시도
+                        forceUnloadChunk(x, z);
                     }
                     
                     // 안개 블록 설정
                     if (chunkData.has("fogBlock")) {
                         String blockId = chunkData.get("fogBlock").getAsString();
                         try {
-                            // Identifier.of() 메서드 사용
-                            BlockState blockState = Registries.BLOCK.get(Identifier.of(blockId)).getDefaultState();
-                            fogBlocks.put(chunkPos, blockState);
+                            // 안전한 Identifier 생성
+                            Identifier blockIdentifier = safeCreateIdentifier(blockId);
+                            if (blockIdentifier != null) {
+                                BlockState blockState = Registries.BLOCK.get(blockIdentifier).getDefaultState();
+                                fogBlocks.put(chunkPos, blockState);
+                            } else {
+                                fogBlocks.put(chunkPos, defaultFogBlock);
+                            }
                         } catch (Exception e) {
                             System.out.println("잘못된 블록 ID: " + blockId);
                             fogBlocks.put(chunkPos, defaultFogBlock);
@@ -266,12 +372,47 @@ public class FogOfWarClient implements ClientModInitializer{
                     }
                 }
                 
-                // 게임 세계 리로드 요청
-                MinecraftClient.getInstance().worldRenderer.reload();
+                // 게임 세계 리로드 요청 - 안전하게 실행
+                safeReloadWorldRenderer();
             }
         } catch (Exception e) {
             System.out.println("API 응답 처리 오류: " + e.getMessage());
             e.printStackTrace();
+        }
+    }
+    
+    /**
+     * 안전하게 월드 렌더러 리로드
+     */
+    private void safeReloadWorldRenderer() {
+        MinecraftClient client = MinecraftClient.getInstance();
+        if (client != null && client.worldRenderer != null && client.world != null) {
+            client.execute(() -> client.worldRenderer.reload());
+        }
+    }
+    
+    /**
+     * 안전하게 Identifier 생성
+     */
+    private Identifier safeCreateIdentifier(String id) {
+        try {
+            // Identifier.of() 메서드 사용 - 마인크래프트 공식 API
+            return Identifier.of(id);
+        } catch (Exception e) {
+            System.out.println("유효하지 않은 Identifier: " + id);
+        }
+        return null;
+    }
+    
+    /**
+     * 청크를 강제로 언로드합니다.
+     */
+    private void forceUnloadChunk(int x, int z) {
+        MinecraftClient client = MinecraftClient.getInstance();
+        if (client != null && client.world != null) {
+            ChunkPos pos = new ChunkPos(x, z);
+            ((ClientChunkManager)client.world.getChunkManager()).unload(pos);
+            System.out.println("청크 강제 언로드: (" + x + ", " + z + ")");
         }
     }
     
@@ -294,14 +435,14 @@ public class FogOfWarClient implements ClientModInitializer{
      */
     public void saveData() {
         try {
+            MinecraftClient client = MinecraftClient.getInstance();
+            if (client.world == null || client.player == null) return;
+            
             // 저장 디렉토리 확인
             Path saveDir = net.fabricmc.loader.api.FabricLoader.getInstance().getConfigDir().resolve("fog_data");
             if (!saveDir.toFile().exists()) saveDir.toFile().mkdirs();
             
             // 월드 ID와 플레이어를 기반으로 파일명 생성
-            MinecraftClient client = MinecraftClient.getInstance();
-            if (client.world == null || client.player == null) return;
-            
             String worldId = client.world.getRegistryKey().getValue().toString().replace(':', '_');
             String playerName = client.player.getGameProfile().getName();
             File saveFile = saveDir.resolve(worldId + "_" + playerName + ".dat").toFile();
@@ -408,11 +549,17 @@ public class FogOfWarClient implements ClientModInitializer{
                         String blockId = blockData.getString("block");
                         
                         try {
-                            // Identifier.of() 메서드 사용
-                            Block block = Registries.BLOCK.get(Identifier.of(blockId));
-                            fogBlocks.put(new ChunkPosition(x, z), block.getDefaultState());
+                            // 안전한 Identifier 생성
+                            Identifier blockIdentifier = safeCreateIdentifier(blockId);
+                            if (blockIdentifier != null) {
+                                Block block = Registries.BLOCK.get(blockIdentifier);
+                                fogBlocks.put(new ChunkPosition(x, z), block.getDefaultState());
+                            } else {
+                                fogBlocks.put(new ChunkPosition(x, z), defaultFogBlock);
+                            }
                         } catch (Exception e) {
                             System.out.println("잘못된 블록 ID: " + blockId);
+                            fogBlocks.put(new ChunkPosition(x, z), defaultFogBlock);
                         }
                     }
                 }
@@ -432,10 +579,9 @@ public class FogOfWarClient implements ClientModInitializer{
                 
                 System.out.println("안개 데이터 로드 완료: " + saveFile.getPath());
                 
-                // 월드 리렌더링
-                if (client.worldRenderer != null) {
-                    client.worldRenderer.reload();
-                }
+                // 월드 리렌더링 - 안전하게 실행
+                safeReloadWorldRenderer();
+                
             } catch (Exception e) {
                 System.out.println("안개 데이터 로드 실패: " + e.getMessage());
                 e.printStackTrace();
@@ -458,8 +604,8 @@ public class FogOfWarClient implements ClientModInitializer{
      * 청크 위치를 식별하는 클래스
      */
     public static class ChunkPosition {
-        private final int x;
-        private final int z;
+        public final int x;
+        public final int z;
         
         public ChunkPosition(int x, int z) {
             this.x = x;
