@@ -27,13 +27,18 @@
 		{
 			"config": "civarmymod.client.mixins.json",
 			"environment": "client"
+		},
+		{
+			"config": "civarmymod.compat.sodium.mixins.json",
+			"environment": "client"
 		}
 	],
 	"depends": {
 		"fabricloader": ">=0.16.10",
 		"minecraft": "~1.21.4",
 		"java": ">=21",
-		"fabric-api": "*"
+		"fabric-api": "*",
+		"sodium": ">=0.6.10"
 	},
 	"suggests": {
 		"another-mod": "*"

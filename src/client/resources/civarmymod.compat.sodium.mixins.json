@@ -1,0 +1,12 @@
+{
+    "required": true,
+    "package": "net.civarmymod.mixin.compat.sodium",
+    "compatibilityLevel": "JAVA_21",
+    "plugin": "net.civarmymod.mixin.SodiumMixinPlugin",
+    "client": [
+        "SodiumChunkBuilderMeshingTaskMixin"
+    ],
+    "injectors": {
+        "defaultRequire": 0
+    }
+}

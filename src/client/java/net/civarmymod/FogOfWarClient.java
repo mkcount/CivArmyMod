@@ -1,5 +1,16 @@
 package net.civarmymod;
 
+import java.io.File;
+import java.nio.file.Path;
+import java.util.HashSet;
+import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+
+import com.google.gson.JsonArray;
+import com.google.gson.JsonElement;
+import com.google.gson.JsonObject;
+
 import net.civarmymod.config.FogConfig;
 import net.civarmymod.network.FogAPIClient;
 import net.fabricmc.api.ClientModInitializer;
@@ -14,25 +25,16 @@ import net.minecraft.block.Blocks;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.network.ClientPlayNetworkHandler; // <- onWorldJoin/Leave 시그니처용
 import net.minecraft.client.world.ClientChunkManager;
+import net.minecraft.client.world.ClientWorld;
 import net.minecraft.nbt.NbtCompound;
+import net.minecraft.nbt.NbtElement; // <--- 이 줄 추가
 import net.minecraft.nbt.NbtIo;
 import net.minecraft.nbt.NbtList;
 import net.minecraft.nbt.NbtSizeTracker;
 import net.minecraft.registry.Registries;
 import net.minecraft.util.Identifier;
+import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.ChunkPos;
-
-import com.google.gson.JsonArray;
-import com.google.gson.JsonElement;
-import com.google.gson.JsonObject;
-
-import java.io.File;
-import java.nio.file.Path;
-import java.util.HashMap;
-import java.util.HashSet;
-import java.util.Map;
-import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * 전장의 안개 시스템 클라이언트 구현
@@ -57,11 +59,15 @@ public class FogOfWarClient implements ClientModInitializer {
     }
 
     // --- 데이터 저장 구조 ---
-    private Map<ChunkPosition, NbtCompound> chunkSnapshots = new ConcurrentHashMap<>();
+    private Map<ChunkPosition, byte[]> chunkSnapshots = new ConcurrentHashMap<>();
     public enum ChunkState { VISIBLE, FOGGED, HIDDEN }
     private final Map<ChunkPosition, ChunkState> chunkStates = new ConcurrentHashMap<>();
     private final Map<ChunkPosition, BlockState> fogBlocks = new ConcurrentHashMap<>();
     private BlockState defaultFogBlock = Blocks.GRAY_CONCRETE.getDefaultState();
+
+    // --- 월드 차원 정보 ---
+    private int worldBottomY = 0; // 월드 최저 Y 좌표, 스냅샷 생성 시 업데이트
+    private int worldTotalHeight = 256; // 월드 전체 높이, 스냅샷 생성 시 업데이트
 
     // --- 유틸리티 및 통신 ---
     private FogAPIClient apiClient;
@@ -243,7 +249,7 @@ public class FogOfWarClient implements ClientModInitializer {
                     logDebug("Processing chunk (" + x + ", " + z + ")");
 
                     // 1. 청크 상태 설정
-                    ChunkState state = ChunkState.HIDDEN; // API 명세에 따라 기본값 조정 가능
+                    ChunkState state = ChunkState.VISIBLE; // 기본값을 VISIBLE로 변경 (안전한 기본값)
                     if (chunkData.has("state") && chunkData.get("state").isJsonPrimitive()) {
                         String stateStr = chunkData.get("state").getAsString().toUpperCase();
                         try {
@@ -256,6 +262,23 @@ public class FogOfWarClient implements ClientModInitializer {
                          logDebug("  No 'state' field found or invalid type, using default: " + state);
                     }
                     chunkStates.put(chunkPos, state);
+
+                    // 상태가 HIDDEN으로 설정되었다면 해당 청크를 강제로 언로드 시도
+                    if (state == ChunkState.HIDDEN) {
+                         // Mixin 클래스의 인스턴스에 접근하여 forceUnloadChunk 호출 필요
+                         // ClientChunkManager 인스턴스를 가져와서 캐스팅해야 함
+                         MinecraftClient client = MinecraftClient.getInstance();
+                         if (client != null && client.world != null && client.world.getChunkManager() instanceof ClientChunkManager) {
+                             try {
+                                 // Use the accessor to call the original unload method
+                                //  ((ClientChunkManagerAccessor)client.world.getChunkManager()).invokeUnload(new ChunkPos(x, z));
+                                //  ((ClientChunkManagerAccessor)client.world.getChunkManager()).invokeUnload(new ChunkPos(x, z+4));
+                                 logDebug("청크 언로드 요청 완료: (" + x + ", " + z + ")"); // 성공 로그
+                             } catch (Exception e) {
+                                 logError("청크 언로드 중 오류 발생: (" + x + ", " + z + ") - " + e.getMessage(), e); // 오류 로그
+                             }
+                         }
+                    }
 
                     // 2. 안개 블록 설정
                     BlockState fogBlock = defaultFogBlock;
@@ -284,25 +307,32 @@ public class FogOfWarClient implements ClientModInitializer {
                     }
 
 
-                    // 3. 스냅샷 데이터 저장/제거
-                    if (state == ChunkState.FOGGED && chunkData.has("snapshot") && chunkData.get("snapshot").isJsonPrimitive()) {
-                        String snapshotBase64 = chunkData.get("snapshot").getAsString();
-                        logDebug("  Attempting to decode snapshot for FOGGED chunk...");
-                        NbtCompound snapshot = FogAPIClient.decodeSnapshot(snapshotBase64);
-                        if (snapshot != null) {
-                            chunkSnapshots.put(chunkPos, snapshot);
-                            logDebug("  Snapshot decoded and stored.");
-                        } else {
-                            logError("  청크 (" + x + ", " + z + ") 스냅샷 디코딩 실패!");
-                            // 오류 시 FOGGED 상태 유지 or 다른 상태로 변경?
-                            // chunkStates.put(chunkPos, ChunkState.VISIBLE);
-                        }
-                    } else {
-                        // FOGGED 상태가 아니거나 스냅샷 데이터가 없으면 제거
-                        if(chunkSnapshots.remove(chunkPos) != null) {
-                             logDebug("  Removed snapshot data for non-FOGGED chunk.");
-                        }
-                    }
+                    // // 3. 스냅샷 데이터 저장/제거
+                    // if (state == ChunkState.FOGGED) {
+                    //     if (chunkData.has("snapshot") && chunkData.get("snapshot").isJsonPrimitive()) {
+                    //         // 서버에서 스냅샷 데이터를 제공한 경우
+                    //         String snapshotBase64 = chunkData.get("snapshot").getAsString();
+                    //         logDebug("  Attempting to decode snapshot for FOGGED chunk...");
+                    //         NbtCompound snapshot = FogAPIClient.decodeSnapshot(snapshotBase64);
+                    //         if (snapshot != null) {
+                    //             chunkSnapshots.put(chunkPos, snapshot);
+                    //             logDebug("  Snapshot from server decoded and stored.");
+                    //         } else {
+                    //             logError("  청크 (" + x + ", " + z + ") 스냅샷 디코딩 실패!");
+                               
+                                
+                    //         }
+                    //     } else {
+                           
+                    //         logDebug("  No snapshot data from server, creating local snapshot for chunk (" + x + ", " + z + ")");
+                        
+                    //     }
+                    // } else {
+                    //     // FOGGED 상태가 아니면 스냅샷 데이터 제거
+                    //     if(chunkSnapshots.remove(chunkPos) != null) {
+                    //          logDebug("  Removed snapshot data for non-FOGGED chunk.");
+                    //     }
+                    // }
                 } // End of chunk processing loop
 
                 logInfo("청크 데이터 처리 완료: " + processedCount + "/" + updateCount);
@@ -414,14 +444,15 @@ public class FogOfWarClient implements ClientModInitializer {
             }
              if (!fogBlocksNbt.isEmpty()) root.put("fogBlocks", fogBlocksNbt);
 
-            // 스냅샷 데이터 저장 (FOGGED 상태 청크만)
+            // 스냅샷 데이터 저장 (FOGGED 상태 청크만, byte[] 사용)
             NbtList snapshotsNbt = new NbtList();
-            for (Map.Entry<ChunkPosition, NbtCompound> entry : chunkSnapshots.entrySet()) {
+            for (Map.Entry<ChunkPosition, byte[]> entry : chunkSnapshots.entrySet()) {
                  if (chunkStates.getOrDefault(entry.getKey(), ChunkState.VISIBLE) == ChunkState.FOGGED) {
                     NbtCompound snapshotData = new NbtCompound();
                     snapshotData.putInt("x", entry.getKey().x);
                     snapshotData.putInt("z", entry.getKey().z);
-                    snapshotData.put("data", entry.getValue());
+                    // byte[] 데이터를 NBT에 저장
+                    snapshotData.putByteArray("data", entry.getValue());
                     snapshotsNbt.add(snapshotData);
                     snapshotCount++;
                  }
@@ -531,18 +562,23 @@ public class FogOfWarClient implements ClientModInitializer {
                     }
                 }
 
-                // 스냅샷 데이터 불러오기
-                 if (root.contains("snapshots", NbtList.COMPOUND_TYPE)) {
+                // 스냅샷 데이터 불러오기 (byte[] 사용)
+                if (root.contains("snapshots", NbtList.COMPOUND_TYPE)) {
                     NbtList snapshotsNbt = root.getList("snapshots", NbtCompound.COMPOUND_TYPE);
                      logDebug("  Loading " + snapshotsNbt.size() + " snapshots...");
                     for (int i = 0; i < snapshotsNbt.size(); i++) {
                         NbtCompound snapshotData = snapshotsNbt.getCompound(i);
-                         if (snapshotData.contains("x") && snapshotData.contains("z") && snapshotData.contains("data", NbtCompound.COMPOUND_TYPE)) {
+                         if (snapshotData.contains("x") && snapshotData.contains("z") && snapshotData.contains("data", NbtElement.BYTE_ARRAY_TYPE)) {
                             int x = snapshotData.getInt("x");
                             int z = snapshotData.getInt("z");
-                            NbtCompound data = snapshotData.getCompound("data");
-                            chunkSnapshots.put(new ChunkPosition(x, z), data);
-                            snapshotCount++;
+                            // NBT에서 byte[] 데이터를 로드
+                            byte[] data = snapshotData.getByteArray("data");
+                            if (data != null && data.length > 0) { // 데이터 유효성 검사 (선택적)
+                                chunkSnapshots.put(new ChunkPosition(x, z), data);
+                                snapshotCount++;
+                            } else {
+                                logWarn("    청크 (" + x + ", " + z + ")의 스냅샷 데이터가 비어 있거나 유효하지 않습니다.");
+                            }
                         } else {
                             logWarn("    Invalid snapshot data found in NBT: " + snapshotData);
                         }
@@ -565,7 +601,7 @@ public class FogOfWarClient implements ClientModInitializer {
     // --- 상태 조회 메서드 (Mixin 등에서 사용) ---
 
     /** 주어진 청크의 스냅샷 데이터를 가져옵니다. */
-    public static NbtCompound getChunkSnapshot(int x, int z) {
+    public static byte[] getChunkSnapshot(int x, int y, int z) {
         if (instance == null) {
              // logStaticWarn("getChunkSnapshot called before instance is ready."); // 너무 빈번하게 호출될 수 있음
             return null;
@@ -574,38 +610,92 @@ public class FogOfWarClient implements ClientModInitializer {
              // logStaticDebug("getChunkSnapshot called before world initialized."); // 너무 빈번하게 호출될 수 있음
              return null;
         }
-        ChunkPosition pos = new ChunkPosition(x, z);
-        NbtCompound snapshot = instance.chunkSnapshots.get(pos);
+        ChunkPosition pos = new ChunkPosition(x >> 4, z >> 4);
+        byte[] snapshot = instance.chunkSnapshots.get(pos);
         // logStaticDebug("getChunkSnapshot(" + pos + ") -> " + (snapshot != null ? "Found" : "Not Found")); // 매우 빈번하므로 주석 처리
         return snapshot;
     }
 
     /** 특정 청크가 숨겨진 상태인지 확인 */
     public static boolean isHiddenChunk(int x, int z) {
-        if (instance == null || !instance.initialized) return false;
+        if (instance == null || !instance.initialized) return true; // 기본값을 HIDDEN으로 변경
         ChunkPosition pos = new ChunkPosition(x, z);
-        boolean hidden = instance.chunkStates.getOrDefault(pos, ChunkState.VISIBLE) == ChunkState.HIDDEN;
+        boolean hidden = instance.chunkStates.getOrDefault(pos, ChunkState.HIDDEN) == ChunkState.HIDDEN; // 기본값을 HIDDEN으로 변경
         // logStaticDebug("isHiddenChunk(" + pos + ") -> " + hidden); // 매우 빈번하므로 주석 처리
         return hidden;
     }
 
     /** 특정 청크가 보이는지 확인 */
     public static boolean isVisibleChunk(int x, int z) {
-        if (instance == null) return true; // 안전 기본값
-        if (!instance.initialized) return true; // 초기화 안됐으면 기본적으로 보임
+        if (instance == null) return false;
+        if (!instance.initialized) return false; // 초기화 안됐으면 기본적으로 숨김
         ChunkPosition pos = new ChunkPosition(x, z);
-        boolean visible = instance.chunkStates.getOrDefault(pos, ChunkState.VISIBLE) == ChunkState.VISIBLE;
+        // 맵에 없으면 HIDDEN으로 간주. VISIBLE 상태는 명시적으로 맵에 있어야 함.
+        boolean visible = instance.chunkStates.getOrDefault(pos, ChunkState.HIDDEN) == ChunkState.VISIBLE;
         // logStaticDebug("isVisibleChunk(" + pos + ") -> " + visible); // 매우 빈번하므로 주석 처리
         return visible;
     }
 
     /** 특정 청크가 안개 상태인지 확인 */
     public static boolean isFoggedChunk(int x, int z) {
-        if (instance == null || !instance.initialized) return false;
+        if (instance == null || !instance.initialized) return false; // 안개는 기본적으로 false로 유지
         ChunkPosition pos = new ChunkPosition(x, z);
-        boolean fogged = instance.chunkStates.getOrDefault(pos, ChunkState.VISIBLE) == ChunkState.FOGGED;
+        boolean fogged = instance.chunkStates.getOrDefault(pos, ChunkState.HIDDEN) == ChunkState.FOGGED; // 기본값을 HIDDEN으로 변경
         // logStaticDebug("isFoggedChunk(" + pos + ") -> " + fogged); // 매우 빈번하므로 주석 처리
         return fogged;
+    }
+    
+    /**
+     * 특정 청크의 원래 블록 상태를 가져옵니다.
+     * 이 메서드는 fogged 상태인 청크의 원래 블록 상태를 반환합니다.
+     * 
+     * @param x 청크 X 좌표
+     * @param y 블록 Y 좌표
+     * @param z 청크 Z 좌표
+     * @return 원래 블록 상태 (스냅샷이 없거나 공기/기타는 null 또는 Blocks.AIR, 고체는 Blocks.STONE, 액체는 Blocks.WATER)
+     */
+    public static BlockState getOriginalBlockState(int x, int y, int z) {
+        if (instance == null || !instance.initialized) return null;
+        
+        // 청크 좌표 계산
+        int chunkX = x >> 4;
+        int chunkZ = z >> 4;
+        ChunkPosition chunkPos = new ChunkPosition(chunkX, chunkZ);
+        
+        // 해당 청크의 스냅샷 가져오기
+        byte[] snapshot = instance.chunkSnapshots.get(chunkPos);
+        if (snapshot == null) return null; // 스냅샷 자체가 없음
+        
+        try {
+            // 청크 내 상대 좌표 계산
+            int relX = x & 15;
+            int relZ = z & 15;
+            int relY = y - instance.worldBottomY;
+
+            // Y 좌표가 스냅샷 범위 내에 있는지 확인
+            if (relY < 0 || relY >= instance.worldTotalHeight) {
+                // logStaticDebug("getOriginalBlockState: Y out of bounds. y:" + y + " relY:" + relY); // 너무 빈번할 수 있음
+                return null; // Y 좌표가 스냅샷 범위를 벗어남
+            }
+            
+            int index = (relY * 16 * 16) + (relX * 16) + relZ;
+
+            if (index >= 0 && index < snapshot.length) {
+                byte blockType = snapshot[index];
+                if (blockType == 1) { // Solid
+                    return Blocks.STONE.getDefaultState(); // 고체 마커
+                } else if (blockType == 2) { // Liquid
+                    return Blocks.WATER.getDefaultState(); // 액체 마커
+                } else { // Air or other (0)
+                    return Blocks.AIR.getDefaultState(); // 공기 또는 기타
+                }
+            } 
+        } catch (Exception e) {
+            if (DEBUG_MODE) {
+                logError("블록 상태 복원 중 오류: " + e.getMessage(), e);
+            }
+        }
+        return null; // 예외 발생 시 또는 기타 경우
     }
 
     /** 특정 청크의 안개 블록 상태 가져오기 */
@@ -646,7 +736,7 @@ public class FogOfWarClient implements ClientModInitializer {
     }
 
     /** 안전하게 Identifier 생성 */
-    public Identifier safeCreateIdentifier(String id) {
+    public static Identifier safeCreateIdentifier(String id) {
         if (id == null || id.trim().isEmpty()) return null;
         String processedId = id.trim().toLowerCase(); // 소문자로 처리 권장
         try {
@@ -661,19 +751,144 @@ public class FogOfWarClient implements ClientModInitializer {
              // }
              return identifier;
         } catch (Exception e) { // InvalidIdentifierException 등
-            logWarn("유효하지 않은 Identifier 형식: " + id + " (Processed: " + processedId + ")");
+            if (instance != null) {
+                instance.logWarn("유효하지 않은 Identifier 형식: " + id + " (Processed: " + processedId + ")");
+            }
             return null;
         }
     }
 
-    /** 청크를 강제로 언로드 (현재 직접 구현 어려움) */
-    private void forceUnloadChunk(int x, int z) {
-        logWarn("청크 강제 언로드 시도 (현재 미구현): (" + x + ", " + z + ")");
-        // MinecraftClient client = MinecraftClient.getInstance();
-        // if (client != null && client.world != null && client.world.getChunkManager() instanceof ClientChunkManager) {
-        //     ChunkPos pos = new ChunkPos(x, z);
-        //     // 직접 unload 호출 어려움
-        // }
+    /**
+     * 특정 청크의 현재 상태를 가져옵니다.
+     * @param x 청크 X 좌표
+     * @param z 청크 Z 좌표
+     * @return 해당 청크의 상태. 맵에 없으면 HIDDEN을 반환합니다.
+     */
+    public ChunkState getChunkState(int x, int z) {
+        return chunkStates.getOrDefault(new ChunkPosition(x, z), ChunkState.HIDDEN);
+    }
+
+    /**
+     * 특정 청크의 상태를 설정합니다.
+     * @param x 청크 X 좌표
+     * @param z 청크 Z 좌표
+     * @param state 설정할 청크 상태
+     */
+    public void setChunkState(int x, int z, ChunkState state) {
+        logDebug("setChunkState(" + x + ", " + z + ", " + state + ") 호출됨. Thread: " + Thread.currentThread().getName());
+        ChunkPosition pos = new ChunkPosition(x, z);
+        ChunkState previousState = chunkStates.get(pos); // 이전 상태 확인 (로깅용)
+
+        switch (state) {
+            case VISIBLE:
+                chunkStates.put(pos, ChunkState.VISIBLE);
+                fogBlocks.remove(pos);   // Visible 청크는 커스텀 안개 블록이 필요 없음
+                chunkSnapshots.remove(pos); // Visible 청크는 스냅샷이 필요 없음
+                break;
+            case FOGGED:
+                chunkStates.put(pos, ChunkState.FOGGED);
+                fogBlocks.put(pos, defaultFogBlock);
+                // 스냅샷 생성 및 저장
+                generateAndStoreChunkSnapshot(pos);
+                break;
+            case HIDDEN:
+                if (previousState != null && previousState != ChunkState.HIDDEN) { // 맵에 있었고 HIDDEN이 아니었던 경우에만 로그
+                    logDebug("청크 (" + x + ", " + z + ") 상태를 HIDDEN으로 변경 (맵에서 제거). 이전 상태: " + previousState);
+                } else if (previousState == null) {
+                    // 맵에 없었으므로 (기본 HIDDEN), 별도 로그는 불필요하거나, 원한다면 추가
+                }
+                chunkStates.remove(pos); // HIDDEN은 기본 상태이므로 맵에서 제거하여 메모리 절약
+                fogBlocks.remove(pos);   // 관련 안개 블록 정보도 제거
+                chunkSnapshots.remove(pos); // 관련 스냅샷 정보도 제거
+                break;
+        }
+        // 상태 변경이 실제로 일어났거나, VISIBLE/FOGGED로 설정된 경우 로그 (HIDDEN으로의 변경은 위에서 상세 로깅)
+        if ((previousState != state) || (state == ChunkState.VISIBLE || state == ChunkState.FOGGED)) {
+             logDebug("청크 (" + x + ", " + z + ") 상태 최종 설정: " + state + (previousState == state ? " (변경 없음, 상태 유지)" : ""));
+        }
+    }
+
+    /**
+     * 지정된 청크의 스냅샷을 생성하고 chunkSnapshots 맵에 저장합니다.
+     * @param chunkPosition 스냅샷을 생성할 청크의 위치
+     * @return 생성된 스냅샷 데이터, 실패 시 null
+     */
+    private byte[] generateAndStoreChunkSnapshot(ChunkPosition chunkPosition) {
+        MinecraftClient client = MinecraftClient.getInstance();
+        if (client == null || client.world == null) {
+            logWarn("월드 또는 클라이언트가 null이므로 청크 (" + chunkPosition.x + ", " + chunkPosition.z + ") 스냅샷을 생성/저장할 수 없습니다.");
+            return null;
+        }
+        ClientWorld world = client.world;
+        ChunkPos mcChunkPos = new ChunkPos(chunkPosition.x, chunkPosition.z);
+
+        // 월드 차원 정보 업데이트 (스냅샷 생성/해석에 사용)
+        this.worldBottomY = world.getBottomY();
+        this.worldTotalHeight = world.getHeight();
+
+        // 고체/액체 블록 위치만 저장하는 스냅샷 생성
+        byte[] snapshotData = internalCreateChunkSnapshotData(world, mcChunkPos);
+
+        if (snapshotData != null) {
+            chunkSnapshots.put(chunkPosition, snapshotData);
+            logDebug("청크 (" + chunkPosition.x + ", " + chunkPosition.z + ")의 스냅샷 저장됨. 배열 크기: " + snapshotData.length + " bytes");
+            return snapshotData;
+        } else {
+            logWarn("청크 (" + chunkPosition.x + ", " + chunkPosition.z + ") 스냅샷 생성 실패.");
+            return null;
+        }
+    }
+
+    /**
+     * 청크 내 고체 및 액체 블록의 위치 정보를 담은 스냅샷 데이터를 생성합니다.
+     * @param world 클라이언트 월드
+     * @param chunkPos 청크 위치
+     * @return 스냅샷 데이터 (byte 배열, 0: 공기/기타, 1: 고체 블록, 2: 액체 블록), 실패 시 null
+     */
+    private byte[] internalCreateChunkSnapshotData(ClientWorld world, ChunkPos chunkPos) {
+        int minX = chunkPos.getStartX();
+        int minZ = chunkPos.getStartZ();
+        int minY = world.getBottomY();
+        int worldHeight = world.getHeight(); // Y 범위 크기 (예: 384)
+        int arraySize = 16 * worldHeight * 16;
+        byte[] snapshot = new byte[arraySize];
+
+        BlockPos.Mutable mutablePos = new BlockPos.Mutable();
+        long startTime = System.nanoTime(); // 성능 측정 시작
+
+        try {
+            for (int relY = 0; relY < worldHeight; relY++) {
+                int worldY = minY + relY;
+                for (int relX = 0; relX < 16; relX++) {
+                    for (int relZ = 0; relZ < 16; relZ++) {
+                        mutablePos.set(minX + relX, worldY, minZ + relZ);
+                        BlockState blockState = world.getBlockState(mutablePos);
+
+                        int valueToStore = 0; // 기본값: 공기 또는 기타
+                        if (!blockState.getFluidState().isEmpty()) {
+                            valueToStore = 2; // 액체 블록
+                        } else if (blockState.isSolidBlock(world, mutablePos)) {
+                            valueToStore = 1; // 고체 블록
+                        }
+
+                        if (valueToStore != 0) {
+                            // 인덱스 계산: Y가 가장 바깥쪽 루프이므로 Y축 우선 (Y * width * depth + X * depth + Z)
+                            int index = (relY * 16 * 16) + (relX * 16) + relZ;
+                            if (index >= 0 && index < arraySize) { // 배열 범위 확인 (필수)
+                                snapshot[index] = (byte) valueToStore;
+                            }
+                        }
+                        // 0은 기본값이므로 else 처리는 불필요
+                    }
+                }
+            }
+            long endTime = System.nanoTime();
+            logDebug("청크 (" + chunkPos.x + ", " + chunkPos.z + ") 스냅샷 생성 완료. 소요 시간: " + (endTime - startTime) / 1_000_000 + " ms");
+            return snapshot;
+        } catch (Exception e) {
+            logError("청크 (" + chunkPos.x + ", " + chunkPos.z + ") 스냅샷 생성 중 오류 발생", e);
+            return null;
+        }
     }
 
     // --- 기타 설정 관련 메서드 ---
@@ -697,6 +912,8 @@ public class FogOfWarClient implements ClientModInitializer {
         }
     }
 
+   
+    
     // --- 로깅 헬퍼 ---
     private static void logInfo(String message) { System.out.println("[FogOfWar] " + message); }
     private static void logWarn(String message) { System.out.println("[FogOfWar WARN] " + message); }

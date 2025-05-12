@@ -1,27 +1,32 @@
 package net.civarmymod.network;
 
+import java.io.ByteArrayInputStream;
+import java.io.DataInputStream;
+import java.net.URI;
+import java.net.URISyntaxException;
+import java.util.Base64;
+import java.util.Map;
+import java.util.Set;
+import java.util.UUID;
+import java.util.function.Consumer;
+
+import org.java_websocket.client.WebSocketClient;
+import org.java_websocket.enums.ReadyState; // ReadyState enum import
+import org.java_websocket.handshake.ServerHandshake;
+
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
+import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
+
+import net.civarmymod.NPCManager;
 import net.fabricmc.api.EnvType;
 import net.fabricmc.api.Environment;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.nbt.NbtCompound;
+import net.minecraft.nbt.NbtElement;
 import net.minecraft.nbt.NbtIo;
 import net.minecraft.nbt.NbtSizeTracker;
-import org.java_websocket.client.WebSocketClient;
-import org.java_websocket.drafts.Draft_6455; // 예시: 특정 Draft 사용 시 추가
-import org.java_websocket.enums.ReadyState; // ReadyState enum import
-import org.java_websocket.handshake.ServerHandshake;
-
-import java.io.ByteArrayInputStream;
-import java.net.URI;
-import java.net.URISyntaxException;
-import java.util.Base64;
-import java.util.HashMap; // 예시: 헤더 추가 시 사용
-import java.util.Map; // 예시: 헤더 추가 시 사용
-import java.util.UUID;
-import java.util.function.Consumer;
 
 /**
  * 서버 API와 통신하는 클라이언트
@@ -33,6 +38,16 @@ public class FogAPIClient {
     private static final Gson GSON = new GsonBuilder().create();
     // 디버그 플래그 추가 (FogConfig 등에서 제어 가능하도록 확장 가능)
     private static final boolean DEBUG_MODE = true; // true로 설정하면 상세 로그 출력
+    
+    // 싱글톤 인스턴스
+    private static FogAPIClient instance;
+    
+    /**
+     * 싱글톤 인스턴스 가져오기
+     */
+    public static FogAPIClient getInstance() {
+        return instance;
+    }
 
     private String websocketEndpoint = "ws://localhost:8080/api/fog/ws";
     private UUID playerUuid;
@@ -40,6 +55,9 @@ public class FogAPIClient {
     private Consumer<JsonObject> dataConsumer;
 
     public FogAPIClient() {
+        // 싱글톤 인스턴스 설정
+        instance = this;
+        
         // MinecraftClient 인스턴스가 아직 준비되지 않았을 수 있으므로 주의
         // 생성자보다는 실제 사용 시점에 UUID를 가져오는 것이 더 안전할 수 있음
         // 예: connectWebSocket 내부에서 가져오기
@@ -294,6 +312,20 @@ public class FogAPIClient {
 
             try {
                 JsonObject jsonData = GSON.fromJson(message, JsonObject.class);
+                
+                // NPC UUID 정보 처리
+                if (jsonData.has("npcUuids")) {
+                    if (DEBUG_MODE) {
+                        System.out.println("[FogWebSocketClient DEBUG] NPC UUID 정보 발견, NPCManager로 전달합니다.");
+                    }
+                    NPCManager npcManager = NPCManager.getInstance();
+                    int processedCount = npcManager.processNpcUuidsFromJson(jsonData);
+                    if (DEBUG_MODE) {
+                        System.out.println("[FogWebSocketClient DEBUG] " + processedCount + "개의 NPC UUID가 처리되었습니다.");
+                    }
+                }
+                
+                // 안개 데이터 처리 (기존 로직)
                 if (dataConsumer != null) {
                     if (DEBUG_MODE) {
                         System.out.println("[FogWebSocketClient DEBUG] Parsed JSON, passing to data consumer.");
@@ -358,7 +390,88 @@ public class FogAPIClient {
     }
 
     /**
-     * Base64로 인코딩된 NBT 데이터를 디코딩
+     * 청크 리프레시 요청을 보냅니다.
+     * 변경된 청크 좌표를 서버에 전송하여 새로 고침을 요청합니다.
+     * 
+     * @param chunks 리프레시할 청크 좌표 목록
+     */
+    public void requestChunkRefresh(Set<? extends Object> chunks) {
+        if (!isConnected()) {
+            if (DEBUG_MODE) {
+                System.out.println("[FogAPIClient DEBUG] 청크 리프레시 요청 실패: 웹소켓 연결 없음");
+            }
+            return;
+        }
+        
+        if (chunks == null || chunks.isEmpty()) {
+            if (DEBUG_MODE) {
+                System.out.println("[FogAPIClient DEBUG] 청크 리프레시 요청 실패: 빈 청크 목록");
+            }
+            return;
+        }
+        
+
+
+
+
+        
+        // try {
+        //     // JSON 데이터 생성
+        //     JsonObject jsonRequest = new JsonObject();
+        //     jsonRequest.addProperty("type", "chunk_refresh");
+            
+        //     // 플레이어 UUID 추가
+        //     if (playerUuid != null) {
+        //         jsonRequest.addProperty("uuid", playerUuid.toString());
+        //     }
+            
+        //     // 청크 좌표 추가
+        //     JsonArray chunksArray = new JsonArray();
+        //     for (Object chunk : chunks) {
+        //         JsonObject chunkObj = new JsonObject();
+                
+        //         // 청크 객체 형식에 따라 좌표 추출
+        //         if (chunk instanceof net.civarmymod.NPCChunkManager.ChunkPosition) {
+        //             net.civarmymod.NPCChunkManager.ChunkPosition pos = (net.civarmymod.NPCChunkManager.ChunkPosition) chunk;
+        //             chunkObj.addProperty("x", pos.x);
+        //             chunkObj.addProperty("z", pos.z);
+        //         } else if (chunk instanceof net.civarmymod.FogOfWarClient.ChunkPosition) {
+        //             net.civarmymod.FogOfWarClient.ChunkPosition pos = (net.civarmymod.FogOfWarClient.ChunkPosition) chunk;
+        //             chunkObj.addProperty("x", pos.x);
+        //             chunkObj.addProperty("z", pos.z);
+        //         } else if (chunk instanceof net.minecraft.util.math.ChunkPos) {
+        //             net.minecraft.util.math.ChunkPos pos = (net.minecraft.util.math.ChunkPos) chunk;
+        //             chunkObj.addProperty("x", pos.x);
+        //             chunkObj.addProperty("z", pos.z);
+        //         } else {
+        //             // 기타 형식은 무시
+        //             continue;
+        //         }
+                
+        //         chunksArray.add(chunkObj);
+        //     }
+            
+        //     jsonRequest.add("chunks", chunksArray);
+            
+        //     // 웹소켓으로 전송
+        //     String jsonString = GSON.toJson(jsonRequest);
+        //     webSocketClient.send(jsonString);
+            
+        //     if (DEBUG_MODE) {
+        //         System.out.println("[FogAPIClient DEBUG] 청크 리프레시 요청 전송: " + chunksArray.size() + "개 청크");
+        //     }
+            
+        // } catch (Exception e) {
+        //     System.err.println("[FogAPIClient ERROR] 청크 리프레시 요청 중 오류: " + e.getMessage());
+        //     if (DEBUG_MODE) {
+        //         e.printStackTrace();
+        //     }
+        // }
+    }
+    
+    /**
+     * Base64로 인코딩된 스냅샷 데이터를 디코딩
+     * JSON 형식과 NBT 형식 모두 지원
      */
     public static NbtCompound decodeSnapshot(String base64Encoded) {
         if (base64Encoded == null || base64Encoded.isEmpty()) {
@@ -374,18 +487,92 @@ public class FogAPIClient {
                  if (logData.length() > 100) logData = logData.substring(0, 100) + "...";
                  System.out.println("[FogAPIClient DEBUG] Decoding Base64 snapshot data (length: " + base64Encoded.length() + "): " + logData);
              }
-            byte[] nbtBytes = Base64.getDecoder().decode(base64Encoded);
+            
+            // Base64 디코딩
+            byte[] decodedBytes = Base64.getDecoder().decode(base64Encoded);
             if (DEBUG_MODE) {
-                 System.out.println("[FogAPIClient DEBUG] Decoded to " + nbtBytes.length + " bytes. Attempting NBT read...");
+                 System.out.println("[FogAPIClient DEBUG] Decoded to " + decodedBytes.length + " bytes.");
             }
-            NbtCompound decodedNbt = NbtIo.readCompressed(new ByteArrayInputStream(nbtBytes), NbtSizeTracker.ofUnlimitedBytes());
+            
+            // 일반 텍스트로 보고 JSON 형식인지 확인
+            String jsonStr = new String(decodedBytes, "UTF-8");
             if (DEBUG_MODE) {
-                System.out.println("[FogAPIClient DEBUG] NBT decoded successfully.");
-                // String nbtString = decodedNbt.toString();
-                // if (nbtString.length() > 200) nbtString = nbtString.substring(0, 200) + "...";
-                // System.out.println("  Decoded NBT: " + nbtString);
+                String logJson = jsonStr;
+                if (logJson.length() > 100) logJson = logJson.substring(0, 100) + "...";
+                System.out.println("[FogAPIClient DEBUG] Decoded text: " + logJson);
             }
-            return decodedNbt;
+            
+            // JSON 형식인지 확인
+            if (jsonStr.trim().startsWith("{") && jsonStr.trim().endsWith("}")) {
+                try {
+                    if (DEBUG_MODE) {
+                        System.out.println("[FogAPIClient DEBUG] Detected JSON format, parsing...");
+                    }
+                    
+                    // JSON 파싱
+                    NbtCompound jsonNbt = new NbtCompound();
+                    com.google.gson.JsonObject jsonObj = new com.google.gson.JsonParser().parse(jsonStr).getAsJsonObject();
+                    
+                    // JSON 객체의 각 키-값 쌍을 NBT로 변환
+                    for (Map.Entry<String, com.google.gson.JsonElement> entry : jsonObj.entrySet()) {
+                        String key = entry.getKey();
+                        if (entry.getValue().isJsonPrimitive()) {
+                            jsonNbt.putString(key, entry.getValue().getAsString());
+                        }
+                    }
+                    
+                    if (DEBUG_MODE) {
+                        System.out.println("[FogAPIClient DEBUG] JSON decoded successfully to NBT with " + jsonNbt.getSize() + " entries.");
+                    }
+                    return jsonNbt;
+                } catch (Exception e) {
+                    System.err.println("[FogAPIClient ERROR] JSON parsing failed: " + e.getMessage());
+                    if (DEBUG_MODE) {
+                        e.printStackTrace();
+                    }
+                    return null;
+                }
+            } else {
+                // JSON 형식이 아니면 NBT 형식으로 시도
+                try {
+                    if (DEBUG_MODE) {
+                        System.out.println("[FogAPIClient DEBUG] Not a JSON format, trying NBT format...");
+                    }
+                    
+                    // 압축되지 않은 NBT 형식 시도
+                    try {
+                        DataInputStream dis = new DataInputStream(new ByteArrayInputStream(decodedBytes));
+                        NbtElement nbtElement = NbtIo.read(dis, NbtSizeTracker.ofUnlimitedBytes());
+                        if (nbtElement instanceof NbtCompound) {
+                            NbtCompound decodedNbt = (NbtCompound)nbtElement;
+                            if (DEBUG_MODE) {
+                                System.out.println("[FogAPIClient DEBUG] Uncompressed NBT decoded successfully.");
+                            }
+                            return decodedNbt;
+                        } else {
+                            throw new Exception("Decoded NBT is not a compound: " + nbtElement.getClass().getSimpleName());
+                        }
+                    } catch (Exception uncompressedEx) {
+                        if (DEBUG_MODE) {
+                            System.out.println("[FogAPIClient DEBUG] Not an uncompressed NBT, trying compressed NBT...");
+                        }
+                        
+                        // 압축된 NBT 형식 시도
+                        ByteArrayInputStream bais = new ByteArrayInputStream(decodedBytes);
+                        NbtCompound decodedNbt = NbtIo.readCompressed(bais, NbtSizeTracker.ofUnlimitedBytes());
+                        if (DEBUG_MODE) {
+                            System.out.println("[FogAPIClient DEBUG] Compressed NBT decoded successfully.");
+                        }
+                        return decodedNbt;
+                    }
+                } catch (Exception e) {
+                    System.err.println("[FogAPIClient ERROR] NBT parsing failed: " + e.getMessage());
+                    if (DEBUG_MODE) {
+                        e.printStackTrace();
+                    }
+                    return null;
+                }
+            }
         } catch (IllegalArgumentException e) {
             System.err.println("[FogAPIClient ERROR] Base64 decoding failed: " + e.getMessage());
             if (DEBUG_MODE) {
@@ -394,8 +581,8 @@ public class FogAPIClient {
                  System.err.println("  Invalid Base64 data (length: " + base64Encoded.length() + "): " + logData);
             }
             return null;
-        } catch (Exception e) { // IOException 등 NbtIo.readCompressed에서 발생 가능
-            System.err.println("[FogAPIClient ERROR] NBT decoding/parsing failed: " + e.getClass().getSimpleName() + " - " + e.getMessage());
+        } catch (Exception e) {
+            System.err.println("[FogAPIClient ERROR] Snapshot decoding failed: " + e.getClass().getSimpleName() + " - " + e.getMessage());
              if (DEBUG_MODE) {
                  e.printStackTrace();
              }

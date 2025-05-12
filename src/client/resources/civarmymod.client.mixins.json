@@ -3,8 +3,8 @@
 	"package": "net.civarmymod.mixin",
 	"compatibilityLevel": "JAVA_21",
 	"client": [
-		"ChunkRenderRegionMixin",
-		"ClientChunkManagerMixin"		
+		"accessor.ClientChunkManagerAccessor",
+		"EntityRendererMixin"
 	],
 	"injectors": {
 		"defaultRequire": 1
